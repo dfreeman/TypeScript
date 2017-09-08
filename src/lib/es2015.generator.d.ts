@@ -1,5 +1,10 @@
 interface Generator extends Iterator<any> { }
 
+/**
+ * Marker for the signature of 'yield' expressions in a generator
+ */
+interface YieldSignature<T extends (expr?: never) => any> { }
+
 interface GeneratorFunction {
     /**
      * Creates a new Generator object.

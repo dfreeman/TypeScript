@@ -332,6 +332,7 @@ namespace ts {
         let globalBooleanType: ObjectType;
         let globalRegExpType: ObjectType;
         let globalThisType: GenericType;
+        let globalYieldSignatureType: GenericType;
         let anyArrayType: Type;
         let autoArrayType: Type;
         let anyReadonlyArrayType: Type;
@@ -13248,6 +13249,14 @@ namespace ts {
             });
         }
 
+        function getYieldSignatureType(type: Type): Type {
+            return getObjectFlags(type) & ObjectFlags.Reference && (<TypeReference>type).target === globalYieldSignatureType ? (<TypeReference>type).typeArguments[0] : undefined;
+        }
+
+        function getYieldSignatureTypeFromContextualType(type: Type): Type {
+            return type.flags & TypeFlags.Intersection ? forEach((<IntersectionType>type).types, getYieldSignatureType) : getYieldSignatureType(type);
+        }
+
         function getContextualThisParameterType(func: FunctionLike): Type {
             if (func.kind === SyntaxKind.ArrowFunction) {
                 return undefined;
@@ -15682,6 +15691,9 @@ namespace ts {
                 typeArguments = undefined;
                 argCount = getEffectiveArgumentCount(node, /*args*/ undefined, signature);
             }
+            else if (node.kind === SyntaxKind.YieldExpression) {
+                argCount = getEffectiveArgumentCount(node, /*args*/ undefined, signature);
+            }
             else {
                 const callExpression = <CallExpression | NewExpression>node;
                 if (!callExpression.arguments) {
@@ -15767,7 +15779,7 @@ namespace ts {
             // example, given a 'function wrap<T, U>(cb: (x: T) => U): (x: T) => U' and a call expression
             // 'let f: (x: string) => number = wrap(s => s.length)', we infer from the declared type of 'f' to the
             // return type of 'wrap'.
-            if (node.kind !== SyntaxKind.Decorator) {
+            if (node.kind !== SyntaxKind.Decorator && node.kind !== SyntaxKind.YieldExpression) {
                 const contextualType = getContextualType(node);
                 if (contextualType) {
                     // We clone the contextual mapper to avoid disturbing a resolution in progress for an
@@ -15974,6 +15986,7 @@ namespace ts {
          *    expressions, where the first element of the list is `undefined`.
          * If 'node' is a Decorator, the argument list will be `undefined`, and its arguments and types
          *    will be supplied from calls to `getEffectiveArgumentCount` and `getEffectiveArgumentType`.
+         * If 'node' is a YieldEpression, its argument is the operand to 'yield'
          */
         function getEffectiveCallArguments(node: CallLikeExpression): ReadonlyArray<Expression> {
             if (node.kind === SyntaxKind.TaggedTemplateExpression) {
@@ -15986,10 +15999,10 @@ namespace ts {
                 }
                 return args;
             }
-            else if (node.kind === SyntaxKind.Decorator) {
-                // For a decorator, we return undefined as we will determine
-                // the number and types of arguments for a decorator using
-                // `getEffectiveArgumentCount` and `getEffectiveArgumentType` below.
+            else if (node.kind === SyntaxKind.Decorator || node.kind === SyntaxKind.YieldExpression) {
+                // For a decorator or yield, we return undefined as we will determine
+                // the number and types of arguments using `getEffectiveArgumentCount`
+                // and `getEffectiveArgumentType` below.
                 return undefined;
             }
             else if (isJsxOpeningLikeElement(node)) {
@@ -16012,6 +16025,7 @@ namespace ts {
          *    If 'node.target' is a method or accessor declaration, the effective argument count
          *       is 3, although it can be 2 if the signature only accepts two arguments, allowing
          *       us to match a property decorator.
+         * If 'node' is a YieldExpression, it has either one argument or none.
          * Otherwise, the argument count is the length of the 'args' array.
          */
         function getEffectiveArgumentCount(node: CallLikeExpression, args: ReadonlyArray<Expression>, signature: Signature) {
@@ -16048,6 +16062,9 @@ namespace ts {
 
                         return 3;
                 }
+            }
+            else if (node.kind === SyntaxKind.YieldExpression) {
+                return node.expression ? 1 : 0;
             }
             else {
                 return args.length;
@@ -16225,6 +16242,21 @@ namespace ts {
         }
 
         /**
+         * Returns the effective operand type for the provided argument to a yield expression.
+         */
+        function getEffectiveYieldOperandType(node: YieldExpression): Type {
+            if (node.asteriskToken) {
+                const func = getContainingFunction(node);
+                const functionFlags = getFunctionFlags(func);
+                const type = getTypeOfExpression(node.expression);
+                return getIteratedTypeOrElementType(type, node.expression, /* allowStringInput */ false, /* allowAsyncIterables */ (functionFlags & FunctionFlags.Async) !== 0, /* checkAssignability */ false) || anyType;
+            }
+            else {
+                return getContextualType(node.expression);
+            }
+        }
+
+        /**
          * Gets the effective argument type for an argument in a call expression.
          */
         function getEffectiveArgumentType(node: CallLikeExpression, argIndex: number): Type {
@@ -16233,6 +16265,9 @@ namespace ts {
             // unless we're reporting errors
             if (node.kind === SyntaxKind.Decorator) {
                 return getEffectiveDecoratorArgumentType(<Decorator>node, argIndex);
+            }
+            else if (node.kind === SyntaxKind.YieldExpression) {
+                return getEffectiveYieldOperandType(<YieldExpression>node);
             }
             else if (argIndex === 0 && node.kind === SyntaxKind.TaggedTemplateExpression) {
                 return getGlobalTemplateStringsArrayType();
@@ -16248,7 +16283,7 @@ namespace ts {
          */
         function getEffectiveArgument(node: CallLikeExpression, args: ReadonlyArray<Expression>, argIndex: number) {
             // For a decorator or the first argument of a tagged template expression we return undefined.
-            if (node.kind === SyntaxKind.Decorator ||
+            if (node.kind === SyntaxKind.Decorator || node.kind === SyntaxKind.YieldExpression ||
                 (argIndex === 0 && node.kind === SyntaxKind.TaggedTemplateExpression)) {
                 return undefined;
             }
@@ -16276,11 +16311,12 @@ namespace ts {
         function resolveCall(node: CallLikeExpression, signatures: Signature[], candidatesOutArray: Signature[], fallbackError?: DiagnosticMessage): Signature {
             const isTaggedTemplate = node.kind === SyntaxKind.TaggedTemplateExpression;
             const isDecorator = node.kind === SyntaxKind.Decorator;
+            const isYieldExpression = node.kind === SyntaxKind.YieldExpression;
             const isJsxOpeningOrSelfClosingElement = isJsxOpeningLikeElement(node);
 
             let typeArguments: ReadonlyArray<TypeNode>;
 
-            if (!isTaggedTemplate && !isDecorator && !isJsxOpeningOrSelfClosingElement) {
+            if (!isTaggedTemplate && !isDecorator && !isYieldExpression && !isJsxOpeningOrSelfClosingElement) {
                 typeArguments = (<CallExpression>node).typeArguments;
 
                 // We already perform checking on the type arguments on the class declaration itself.
@@ -16316,9 +16352,9 @@ namespace ts {
             const isSingleNonGenericCandidate = candidates.length === 1 && !candidates[0].typeParameters;
             let excludeArgument: boolean[];
             let excludeCount = 0;
-            if (!isDecorator && !isSingleNonGenericCandidate) {
+            if (!isDecorator && !isYieldExpression && !isSingleNonGenericCandidate) {
                 // We do not need to call `getEffectiveArgumentCount` here as it only
-                // applies when calculating the number of arguments for a decorator.
+                // applies when calculating the number of arguments for a decorator or yield.
                 for (let i = isTaggedTemplate ? 1 : 0; i < args.length; i++) {
                     if (isContextSensitive(args[i])) {
                         if (!excludeArgument) {
@@ -16550,6 +16586,19 @@ namespace ts {
             }
 
             return maxParamsIndex;
+        }
+
+        function resolveYieldExpression(node: YieldExpression, candidatesOutArray: Signature[]): Signature {
+            const func = getContainingFunction(node);
+            const returnType = getContextualReturnType(func);
+            const yieldType = returnType && getYieldSignatureTypeFromContextualType(returnType);
+            const signatures = yieldType && getSignaturesOfType(yieldType, SignatureKind.Call);
+
+            if (!signatures) {
+                return anySignature;
+            }
+
+            return resolveCall(node, signatures, candidatesOutArray);
         }
 
         function resolveCallExpression(node: CallExpression, candidatesOutArray: Signature[]): Signature {
@@ -16899,6 +16948,8 @@ namespace ts {
                     return resolveTaggedTemplateExpression(<TaggedTemplateExpression>node, candidatesOutArray);
                 case SyntaxKind.Decorator:
                     return resolveDecorator(<Decorator>node, candidatesOutArray);
+                case SyntaxKind.YieldExpression:
+                    return resolveYieldExpression(<YieldExpression>node, candidatesOutArray);
                 case SyntaxKind.JsxOpeningElement:
                 case SyntaxKind.JsxSelfClosingElement:
                     // This code-path is called by language service
@@ -18355,31 +18406,36 @@ namespace ts {
                         expressionElementType = checkIteratedTypeOrElementType(expressionType, node.expression, /*allowStringInput*/ false, (functionFlags & FunctionFlags.Async) !== 0);
                     }
 
-                    // There is no point in doing an assignability check if the function
-                    // has no explicit return type because the return type is directly computed
-                    // from the yield expressions.
-                    const returnType = getEffectiveReturnTypeNode(func);
-                    if (returnType) {
-                        const signatureElementType = getIteratedTypeOfGenerator(getTypeFromTypeNode(returnType), (functionFlags & FunctionFlags.Async) !== 0) || anyType;
-                        if (nodeIsYieldStar) {
-                            checkTypeAssignableTo(
-                                functionFlags & FunctionFlags.Async
-                                    ? getAwaitedType(expressionElementType, node.expression, Diagnostics.Type_of_iterated_elements_of_a_yield_Asterisk_operand_must_either_be_a_valid_promise_or_must_not_contain_a_callable_then_member)
-                                    : expressionElementType,
-                                signatureElementType,
-                                node.expression,
-                                /*headMessage*/ undefined);
-                        }
-                        else {
-                            checkTypeAssignableTo(
-                                functionFlags & FunctionFlags.Async
-                                    ? getAwaitedType(expressionType, node.expression, Diagnostics.Type_of_yield_operand_in_an_async_generator_must_either_be_a_valid_promise_or_must_not_contain_a_callable_then_member)
-                                    : expressionType,
-                                signatureElementType,
-                                node.expression,
-                                /*headMessage*/ undefined);
-                        }
+                    const returnTypeNode = getEffectiveReturnTypeNode(func);
+                    const yieldSignature = getResolvedSignature(node);
+                    if (!returnTypeNode && !yieldSignature.parameters.length) {
+                        return anyType;
                     }
+
+                    const signatureElementType = yieldSignature.parameters.length
+                        ? getTypeOfSymbol(yieldSignature.parameters[0])
+                        : getIteratedTypeOfGenerator(getTypeFromTypeNode(returnTypeNode), (functionFlags & FunctionFlags.Async) !== 0) || anyType;
+
+                    if (nodeIsYieldStar) {
+                        checkTypeAssignableTo(
+                            functionFlags & FunctionFlags.Async
+                                ? getAwaitedType(expressionElementType, node.expression, Diagnostics.Type_of_iterated_elements_of_a_yield_Asterisk_operand_must_either_be_a_valid_promise_or_must_not_contain_a_callable_then_member)
+                                : expressionElementType,
+                            signatureElementType,
+                            node.expression,
+                            /*headMessage*/ undefined);
+                    }
+                    else {
+                        checkTypeAssignableTo(
+                            functionFlags & FunctionFlags.Async
+                                ? getAwaitedType(expressionType, node.expression, Diagnostics.Type_of_yield_operand_in_an_async_generator_must_either_be_a_valid_promise_or_must_not_contain_a_callable_then_member)
+                                : expressionType,
+                            signatureElementType,
+                            node.expression,
+                            /*headMessage*/ undefined);
+                    }
+
+                    return getReturnTypeOfSignature(yieldSignature);
                 }
             }
 
@@ -24501,6 +24557,7 @@ namespace ts {
             globalReadonlyArrayType = <GenericType>getGlobalTypeOrUndefined("ReadonlyArray" as __String, /*arity*/ 1);
             anyReadonlyArrayType = globalReadonlyArrayType ? createTypeFromGenericGlobalType(globalReadonlyArrayType, [anyType]) : anyArrayType;
             globalThisType = <GenericType>getGlobalTypeOrUndefined("ThisType" as __String, /*arity*/ 1);
+            globalYieldSignatureType = <GenericType>getGlobalTypeOrUndefined("YieldSignature" as __String, /*arity*/ 1);
         }
 
         function checkExternalEmitHelpers(location: Node, helpers: ExternalEmitHelpers) {
