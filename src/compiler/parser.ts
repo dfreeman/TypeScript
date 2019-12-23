@@ -3432,6 +3432,123 @@ namespace ts {
             return parseOptional(SyntaxKind.EqualsToken) ? parseAssignmentExpressionOrHigher() : undefined;
         }
 
+        interface KindToNodeType {
+            [SyntaxKind.AsExpression]: AsExpression;
+            [SyntaxKind.Identifier]: Identifier;
+            [SyntaxKind.StringLiteral]: StringLiteral;
+            [SyntaxKind.AsExpression]: AsExpression;
+            [SyntaxKind.TypeLiteral]: TypeLiteralNode;
+            [SyntaxKind.LiteralType]: LiteralTypeNode;
+            [SyntaxKind.AnyKeyword]: KeywordTypeNode;
+            [SyntaxKind.ImportType]: ImportTypeNode;
+            [SyntaxKind.CallExpression]: CallExpression;
+            [SyntaxKind.FunctionExpression]: FunctionExpression;
+            [SyntaxKind.AsteriskToken]: AsteriskToken;
+            [SyntaxKind.Parameter]: ParameterDeclaration;
+            [SyntaxKind.Block]: Block;
+            [SyntaxKind.ExpressionStatement]: ExpressionStatement;
+            [SyntaxKind.YieldExpression]: YieldExpression;
+        }
+
+        function parseGlimmerLiteral(): Expression {
+            let glimmer = require('@glimmer/syntax') as typeof import('@glimmer/syntax');
+            let pos = scanner.getTokenPos();
+            let depth = 0;
+
+            while (nextToken() !== SyntaxKind.GlimmerEndToken || depth > 0) {
+                if (token() === SyntaxKind.GlimmerStartToken) {
+                    depth++;
+                } else if (token() === SyntaxKind.GlimmerEndToken) {
+                    depth--;
+                }
+            }
+
+            nextToken();
+
+            let end = scanner.getTokenPos();
+
+            function make<K extends keyof KindToNodeType>(kind: K, options?: Partial<KindToNodeType[K]>): KindToNodeType[K] {
+                return (Object as any).assign(createNode(kind), options, { pos, end });
+            }
+
+            function makeArray<T extends Node>(nodes: T[] = []): NodeArray<T> {
+                return createNodeArray(nodes, pos, end);
+            }
+
+            function makeIdentifier(name: string) {
+                return make(SyntaxKind.Identifier, {
+                    escapedText: escapeLeadingUnderscores(name)
+                });
+            }
+
+
+            let hbsContent = scanner.getText().slice(pos + 5, scanner.getTokenPos() - 5);
+            let parsed = glimmer.preprocess(hbsContent);
+            let blocks: Statement[][] = [[]];
+
+            glimmer.traverse(parsed, {
+                BlockStatement: {
+                    enter() {
+                        let top = blocks[blocks.length - 1];
+                        top.statements = concatenate()
+                    },
+
+                    exit() {
+                    }
+                },
+
+                MustacheStatement(_node) {
+
+                }
+            });
+
+            let generated = make(SyntaxKind.CallExpression, {
+                expression: make(SyntaxKind.Identifier, {
+                    escapedText: escapeLeadingUnderscores('__tpl__')
+                }),
+                arguments: makeArray([
+                    make(SyntaxKind.FunctionExpression, {
+                        asteriskToken: make(SyntaxKind.AsteriskToken),
+                        parameters: makeArray([
+                            make(SyntaxKind.Parameter, {
+                                name: makeIdentifier('__ctx__')
+                            })
+                        ]),
+                        body: make(SyntaxKind.Block, {
+                            // statements: makeArray(bodiesStack.pop()!)
+                        })
+                    })
+                ])
+            });
+
+            if (process.stdout.isTTY) {
+                let printer = createPrinter({});
+                console.error(printer.printNode(EmitHint.Expression, generated, sourceFile));
+                console.error({ generated, parsed });
+            }
+
+            return generated;
+            // return make(SyntaxKind.AsExpression, {
+            //     expression: make(SyntaxKind.AsExpression, {
+            //         expression: make(SyntaxKind.StringLiteral, { text: body }),
+            //         type: make(SyntaxKind.AnyKeyword)
+            //     }),
+            //     type: make(SyntaxKind.ImportType, {
+            //         argument: make(SyntaxKind.LiteralType, {
+            //             literal: make(SyntaxKind.StringLiteral, { text: 'ember-titan' })
+            //         }),
+            //         qualifier: make(SyntaxKind.Identifier, {
+            //             escapedText: escapeLeadingUnderscores('Template')
+            //         }),
+            //         typeArguments: createNodeArray([
+            //             make(SyntaxKind.LiteralType, {
+            //                 literal: make(SyntaxKind.StringLiteral, { text: body })
+            //             })
+            //         ], pos, end)
+            //     })
+            // });
+        }
+
         function parseAssignmentExpressionOrHigher(): Expression {
             //  AssignmentExpression[in,yield]:
             //      1) ConditionalExpression[?in,?yield]
@@ -3447,6 +3564,10 @@ namespace ts {
             // First, do the simple check if we have a YieldExpression (production '6').
             if (isYieldExpression()) {
                 return parseYieldExpression();
+            }
+
+            if (isGlimmerLiteral()) {
+                return parseGlimmerLiteral();
             }
 
             // Then, check if we have an arrow function (production '4' and '5') that starts with a parenthesized
@@ -3495,6 +3616,10 @@ namespace ts {
 
             // It wasn't an assignment or a lambda.  This is a conditional expression:
             return parseConditionalExpressionRest(expr);
+        }
+
+        function isGlimmerLiteral(): boolean {
+            return token() === SyntaxKind.GlimmerStartToken;
         }
 
         function isYieldExpression(): boolean {

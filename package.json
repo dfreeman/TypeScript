@@ -130,5 +130,7 @@
         "source-map-support": false,
         "inspector": false
     },
-    "dependencies": {}
+    "dependencies": {
+        "@glimmer/syntax": "^0.41.3"
+    }
 }

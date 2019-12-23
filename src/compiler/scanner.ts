@@ -146,6 +146,8 @@ namespace ts {
 
     const textToToken = createMapFromTemplate<SyntaxKind>({
         ...textToKeywordObj,
+        "{{#}}": SyntaxKind.GlimmerStartToken,
+        "{{/}}": SyntaxKind.GlimmerEndToken,
         "{": SyntaxKind.OpenBraceToken,
         "}": SyntaxKind.CloseBraceToken,
         "(": SyntaxKind.OpenParenToken,
@@ -201,8 +203,12 @@ namespace ts {
         "&=": SyntaxKind.AmpersandEqualsToken,
         "|=": SyntaxKind.BarEqualsToken,
         "^=": SyntaxKind.CaretEqualsToken,
+<<<<<<< Updated upstream
         "@": SyntaxKind.AtToken,
         "`": SyntaxKind.BacktickToken
+=======
+        "@": SyntaxKind.AtToken
+>>>>>>> Stashed changes
     });
 
     /*
@@ -1855,6 +1861,20 @@ namespace ts {
                         pos++;
                         return token = SyntaxKind.CaretToken;
                     case CharacterCodes.openBrace:
+                        if (text.charCodeAt(pos + 1) === CharacterCodes.openBrace
+                            && text.charCodeAt(pos + 3) === CharacterCodes.closeBrace
+                            && text.charCodeAt(pos + 4) === CharacterCodes.closeBrace
+                        ) {
+                            let signifier = text.charCodeAt(pos + 2);
+                            if (signifier === CharacterCodes.hash) {
+                                pos += 5;
+                                return token = SyntaxKind.GlimmerStartToken;
+                            }
+                            if (signifier === CharacterCodes.slash) {
+                                pos += 5;
+                                return token = SyntaxKind.GlimmerEndToken;
+                            }
+                        }
                         pos++;
                         return token = SyntaxKind.OpenBraceToken;
                     case CharacterCodes.bar:

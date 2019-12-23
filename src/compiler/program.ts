@@ -2149,6 +2149,8 @@ namespace ts {
                         imports = append(imports, node.argument.literal);
                     }
                 }
+
+                // TODO account for locating template types when necessary
             }
 
             /** Returns a token if position is in [start-of-leading-trivia, end), includes JSDoc only in JS files */

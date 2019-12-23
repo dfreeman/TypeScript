@@ -422,6 +422,10 @@ namespace ts {
         JsxSpreadAttribute,
         JsxExpression,
 
+        // Glimmer
+        GlimmerStartToken,
+        GlimmerEndToken,
+
         // Clauses
         CaseClause,
         DefaultClause,
